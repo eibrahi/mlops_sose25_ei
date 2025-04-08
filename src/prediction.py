@@ -1,76 +1,6 @@
-import pandas as pd
-import numpy as np
-import os
-import pickle
-from datetime import datetime, timedelta
-
-def prepare_data(stock_data_folder):
-    """Load and prepare data from all stock files"""
-    all_stocks_data = []
-    
-    for file in os.listdir(stock_data_folder):
-        if file.endswith('.csv'):
-            # Load data
-            df = pd.read_csv(os.path.join(stock_data_folder, file))
-            
-            # Check if 'Date' is a column or index
-            if 'Date' in df.columns:
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-            else:
-                # If Date is already the index
-                df.index = pd.to_datetime(df.index)
-            
-            # Convert numeric columns to float
-            numeric_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            for col in numeric_columns:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # Create features
-            df = create_features(df)
-            
-            # Add stock identifier
-            stock_name = file.split('_')[0].upper()
-            df['stock'] = stock_name
-            
-            all_stocks_data.append(df)
-    
-    # Combine all stocks
-    combined_df = pd.concat(all_stocks_data)
-    combined_df.sort_index(inplace=True)
-    
-    return combined_df
-
-def create_features(df):
-    """Create lag and window features from price data"""
-    # Make a copy of the dataframe to avoid SettingWithCopyWarning
-    df = df.copy()
-    
-    # Calculate returns (with explicit fill_method=None to address the warning)
-    df['return'] = df['Close'].pct_change(fill_method=None)
-    
-    # Create lag features
-    for lag in [1, 2, 3, 5, 10]:
-        df[f'return_lag_{lag}'] = df['return'].shift(lag)
-        df[f'close_lag_{lag}'] = df['Close'].shift(lag)
-        
-    # Create window features
-    for window in [5, 10, 20]:
-        # Price windows
-        df[f'close_mean_{window}'] = df['Close'].rolling(window=window).mean()
-        df[f'close_std_{window}'] = df['Close'].rolling(window=window).std()
-        
-        # Return windows
-        df[f'return_mean_{window}'] = df['return'].rolling(window=window).mean()
-        df[f'return_std_{window}'] = df['return'].rolling(window=window).std()
-        
-    # Volume features
-    df['volume_lag_1'] = df['Volume'].shift(1)
-    df['volume_mean_5'] = df['Volume'].rolling(window=5).mean()
-    df['volume_std_5'] = df['Volume'].rolling(window=5).std()
-    
-    return df
+import pickle # type: ignore
+from datetime import datetime
+import pandas as pd # type: ignore
 
 def predict_next_hour(stock_data_folder, model_path="models/model.pkl"):
     """Predict the next hour's returns for all stocks in the folder"""
@@ -81,9 +11,9 @@ def predict_next_hour(stock_data_folder, model_path="models/model.pkl"):
         model = model_data['model']
         feature_columns = model_data['feature_columns']
     
-    # Load and prepare the most recent data
-    df = prepare_data(stock_data_folder)
-    
+    # Load the prepared csv file as combined_stocks_data
+    df = pd.read_csv("combined_stock_data.csv", index_col=0, parse_dates=True)
+        
     # Get the most recent data point for each stock
     latest_data = {}
     for stock in df['stock'].unique():
@@ -144,8 +74,9 @@ def main():
         
         # Save predictions to Excel
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        predictions.to_excel(f"predictions_{current_time}.xlsx")
-        print(f"\nPredictions saved to predictions_{current_time}.xlsx")
+        # predictions als csv speichern
+        predictions.to_csv(f"predictions_{current_time}.csv")
+        print(f"\nPredictions saved to predictions_{current_time}.csv")
         
     except Exception as e:
         print(f"Error during prediction: {str(e)}")

@@ -1,8 +1,8 @@
 import pandas as pd # type: ignore
 import numpy as np
 import pickle 
-import openpyxl # type: ignore
-from sklearn.preprocessing import StandardScaler # type: ignore
+#import openpyxl # type: ignore
+#from sklearn.preprocessing import StandardScaler # type: ignore
 from lightgbm import LGBMRegressor
 from sklearn.model_selection import TimeSeriesSplit # type: ignore
 from sklearn.metrics import r2_score # type: ignore
@@ -13,42 +13,54 @@ import os
 
 def prepare_data(stock_data_folder):
     """Load and prepare data from all stock files"""
+    print(f"\n=== Starte prepare_data mit Ordner: {stock_data_folder} ===\n")
+    
     all_stocks_data = []
+    print(f"Initialisiere leere Liste all_stocks_data: {all_stocks_data}")
     
-    for file in os.listdir(stock_data_folder):
-        if file.endswith('.csv'):
-            # Load data
-            df = pd.read_csv(os.path.join(stock_data_folder, file))
-            
-            # Check if 'Date' is a column or index
-            if 'Date' in df.columns:
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-            else:
-                # If Date is already the index
-                df.index = pd.to_datetime(df.index)
-            
-            # Convert numeric columns to float
-            numeric_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            for col in numeric_columns:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # Create features
-            df = create_features(df)
-            
-            # Add stock identifier
-            stock_name = file.split('_')[0].upper()
-            df['stock'] = stock_name
-            
-            all_stocks_data.append(df)
+    files = os.listdir(stock_data_folder)
+    csv_files = [f for f in files if f.endswith('.csv')]
+    print(f"Gefundene CSV-Dateien ({len(csv_files)}): {csv_files}")
     
-    # Combine all stocks
+    for i, file in enumerate(csv_files):
+        print(f"\n--- Verarbeite Datei {i+1}/{len(csv_files)}: {file} ---")
+        file_path = os.path.join(stock_data_folder, file)
+        
+        # Hier ist die geänderte Importlogik
+        df = pd.read_csv(file_path)
+        
+        # Überprüfen Sie, ob 'Datetime' in den Spalten ist
+        if 'Datetime' in df.columns:
+            df['Date'] = pd.to_datetime(df['Datetime'], format='ISO8601')
+            df.set_index('Date', inplace=True)
+            df.drop('Datetime', axis=1, errors='ignore', inplace=True)
+        elif 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'], format='ISO8601')
+            df.set_index('Date', inplace=True)
+            
+        print(f"Datums-Bereich: {df.index.min()} bis {df.index.max()}")
+        
+        # Rest Ihrer Funktion bleibt gleich...
+        numeric_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        df = create_features(df)
+        stock_name = file.split('_')[0].upper()
+        df['stock'] = stock_name
+        all_stocks_data.append(df)
+    
+    # Kombinieren der DataFrames
     combined_df = pd.concat(all_stocks_data)
     combined_df.sort_index(inplace=True)
     
-    # speichern des Dataframes als excel
-    combined_df.to_excel("combined_stock_data.xlsx", index=True)
+    # Speichern des DataFrames als csv
+    combined_df.to_csv("combined_stock_data.csv", index=True)
+    
+    print(f"\n=== Zusammenfassung des kombinierten DataFrames ===")
+    print(f"Zeitraum: {combined_df.index.min()} bis {combined_df.index.max()}")
+    
     
     return combined_df
 
@@ -169,7 +181,7 @@ def train_model(df):
 
 def main():
     # Load and prepare data
-    stock_data_folder = "stock_data_2"
+    stock_data_folder = "stock_data"
     df = prepare_data(stock_data_folder)
     
     # Train model
@@ -178,11 +190,17 @@ def main():
     # Ensure the 'models' directory exists
     os.makedirs("models", exist_ok=True)
 
-    # Save the model in the 'models' folder
+    # Erstelle ein Dictionary mit Model und Feature-Spalten
+    model_data = {
+        'model': model,
+        'feature_columns': feature_columns
+    }
+
+    # Save the model data in the 'models' folder
     model_path = os.path.join("models", "model.pkl")
     with open(model_path, 'wb') as f:
-        pickle.dump(model, f)
-        print(f"Model saved at '{model_path}'")
+        pickle.dump(model_data, f)
+        print(f"Model and feature columns saved at '{model_path}'")
     
     # Print feature importance
     feature_importance = pd.DataFrame({
