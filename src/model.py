@@ -169,7 +169,7 @@ def train_model(df):
 
 def main():
     # Load and prepare data
-    stock_data_folder = "stock_data"
+    stock_data_folder = "stock_data_2"
     df = prepare_data(stock_data_folder)
     
     # Train model
