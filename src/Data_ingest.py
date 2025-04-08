@@ -1,5 +1,5 @@
 import os
-import yfinance as yf  # type: ignore
+import yfinance as yf   # type: ignore
 
 # Liste der Ticker-Symbole
 ticker_list = [
