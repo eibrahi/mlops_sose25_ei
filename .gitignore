@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# CSV-Dateien ignorieren
+*.csv
+
+# Excel-Dateien ignorieren
+*.xls
+*.xlsx

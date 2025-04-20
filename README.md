@@ -36,3 +36,33 @@ airflow scheduler
 # In neuem Terminal: Scheduler starten
 ./start_airflow.sh
 ```
+
+### Airflow Trubbleshooting
+
+#### Finde alle laufenden Prozesse
+
+```bash
+# Alle Airflow-Prozesse finden:
+ps aux | grep airflow
+```
+
+#### Terminiere alle laufenden Prozesse
+
+```bash
+# Alle Airflow-Prozesse stoppen:
+killall -9 airflow
+```
+
+#### Restarte den Webserver
+
+```bash
+# Webserver neu starten:
+airflow webserver -D
+```
+
+#### Restarte den Scheduler
+
+```bash
+# Scheduler neu starten:
+airflow scheduler -D
+```
