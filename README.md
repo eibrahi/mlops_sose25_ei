@@ -50,7 +50,7 @@ ps aux | grep airflow
 
 ```bash
 # Alle Airflow-Prozesse stoppen:
-killall -9 airflow
+pkill -f "airflow"
 ```
 
 #### Restarte den Webserver
@@ -65,4 +65,13 @@ airflow webserver -D
 ```bash
 # Scheduler neu starten:
 airflow scheduler -D
+```
+
+#### Restarte den Webserver und den Scheduler mit eigenen scripten
+
+```bash
+# Webserver und Scheduler neu starten:
+sudo systemctl restart airflow-webserver
+sudo systemctl restart airflow-scheduler
+
 ```
