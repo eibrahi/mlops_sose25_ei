@@ -1,9 +1,20 @@
+# DAG: serve_model_api – startet regelmäßig den FastAPI-Server für Modellvorhersagen über MLflow
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+
 from datetime import datetime, timedelta
-import psutil  # NEU oben importieren
+import psutil
 import subprocess
 import os
+
+# -----------------------------
+# 🔧 Konfiguration
+# -----------------------------
+
+DATA_DIR = "/home/holu/airflow/data/stock_data"
+MODEL_DIR = "/home/holu/airflow/data/models"
+FASTAPI_SCRIPT = "/home/holu/airflow/data/fastapi_model_server.py"  # Pfad zum API-Skript
 
 default_args = {
     'owner': 'airflow',
@@ -16,31 +27,39 @@ dag = DAG(
     'serve_model_api',
     default_args=default_args,
     description='Starte FastAPI Server für Modellvorhersagen',
-    schedule_interval='@hourly',
+    schedule_interval='15 * * * *',  # Alle Stunde um Minute 15
     catchup=False,
     tags=['fastapi', 'model', 'prediction'],
 )
 
-FASTAPI_SCRIPT = "/home/holu/airflow/data/fastapi_model_server.py"
+# -----------------------------
+# 🚀 Serverstart-Funktion
+# -----------------------------
 
 def start_server():
-    """Starte FastAPI-Server auf Python-Weise."""
-    # Suche nach existierenden uvicorn Prozessen und beende sie
+    """
+    Beendet laufende FastAPI-Prozesse (uvicorn), falls vorhanden,
+    und startet den Server neu im gewünschten Verzeichnis.
+    """
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            if 'uvicorn' in proc.info['cmdline']:
+            if 'uvicorn' in proc.info.get('cmdline', []):
                 print(f"🛑 Stoppe existierenden Server-Prozess PID {proc.pid}")
                 proc.terminate()
         except Exception as e:
-            print(f"Fehler beim Stoppen eines Prozesses: {e}")
+            print(f"⚠️ Fehler beim Stoppen: {e}")
 
-    # ➔ Starte neuen FastAPI-Server-Prozess
     print("🚀 Starte neuen FastAPI-Server...")
+
+    # Starte FastAPI-Server mit Hot-Reload für schnelles Debugging
     subprocess.Popen(
         ["uvicorn", "fastapi_model_server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
         cwd=os.path.dirname(FASTAPI_SCRIPT),
     )
 
+# -----------------------------
+# 🧱 Task-Definition
+# -----------------------------
 
 start_fastapi_task = PythonOperator(
     task_id='start_fastapi_server',
