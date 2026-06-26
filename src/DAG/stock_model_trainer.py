@@ -1,165 +1,168 @@
-# last change: 2025-05-16 22:08
 """
-Airflow DAG zum Training von ML-Modellen für Aktienrenditen.
-- Kombiniert CSVs aus verschiedenen Aktien
-- Erstellt Features & Zielwerte
-- Trainiert LightGBM-Regressoren pro Aktie
-- Loggt Modelle & Metriken in MLflow
+Airflow DAG zum Training eines gemeinsamen ML-Modells fuer Aktienrenditen.
+
+Die CSV-Dateien einzelner Aktien werden kombiniert. Das Modell lernt anschliessend
+ueber alle Aktien hinweg und nutzt die Aktie selbst als One-Hot-Feature.
 """
+
+from datetime import datetime, timedelta
+import logging
+import os
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-
-from datetime import datetime, timedelta
-import pandas as pd
-import os
-import numpy as np
+from lightgbm import LGBMRegressor
 import mlflow
 import mlflow.sklearn
-
-from lightgbm import LGBMRegressor
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_squared_error
 
-# -----------------------------
-# Konfiguration
-# -----------------------------
+from feature_engineering import MARKET_SYMBOLS, build_feature_frame, get_numeric_feature_columns
 
-DATA_DIR = "/home/holu/airflow/data/stock_data"
-MODEL_DIR = "/home/holu/airflow/data/models"
+
+DATA_DIR = os.getenv("STOCK_DATA_DIR", "/opt/airflow/data/stock_data")
+MODEL_DIR = os.getenv("MODEL_DIR", "/opt/airflow/data/models")
 COMBINED_FILE = os.path.join(DATA_DIR, "combined_stock_data.csv")
+PREPARED_FILE = os.path.join(DATA_DIR, "combined_stock_data_prepared.csv")
 EXPERIMENT_NAME = "stock_return_prediction"
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5001")
+MODEL_NAME = "stock_price_model"
 
-# -----------------------------
-# 1️⃣ CSV-Dateien kombinieren
-# -----------------------------
+REQUIRED_COLUMNS = ["Datetime", "stock", "Open", "High", "Low", "Close", "Volume"]
+
 
 def combine_stock_csvs():
     """Kombiniert Einzel-Aktien-CSV-Dateien zu einer gemeinsamen Datei."""
     all_dfs = []
 
-    for file in os.listdir(DATA_DIR):
-        if file.endswith(".csv") and file != "combined_stock_data.csv":
-            filepath = os.path.join(DATA_DIR, file)
-            try:
-                df = pd.read_csv(filepath)
+    for file_name in os.listdir(DATA_DIR):
+        if not file_name.endswith(".csv") or file_name in {"combined_stock_data.csv", "combined_stock_data_prepared.csv"}:
+            continue
 
-                # Suche nach einer Zeitspalte
-                datetime_col = next((col for col in df.columns if "date" in col.lower()), None)
-                if not datetime_col:
-                    raise ValueError(f"Keine Zeitspalte in {file} gefunden.")
+        file_path = os.path.join(DATA_DIR, file_name)
+        try:
+            df = pd.read_csv(file_path)
+            if "Datetime" not in df.columns:
+                raise ValueError(f"Keine Datetime-Spalte in {file_name} gefunden.")
 
-                df["Datetime"] = pd.to_datetime(df[datetime_col])
-                df["stock"] = file.replace(".csv", "")
-                all_dfs.append(df)
-
-            except Exception as e:
-                print(f"❌ Fehler bei Datei {file}: {e}")
+            df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce", utc=True)
+            df["stock"] = file_name.removesuffix(".csv")
+            all_dfs.append(df)
+        except Exception as exc:
+            logging.warning("Fehler bei Datei %s: %s", file_name, exc)
 
     if not all_dfs:
-        raise ValueError("⚠️ Keine gültigen Stock-Daten gefunden!")
+        raise ValueError("Keine gueltigen Stock-Daten gefunden.")
 
     combined = pd.concat(all_dfs, ignore_index=True)
     combined.to_csv(COMBINED_FILE, index=False)
-    print(f"✅ combined_stock_data.csv mit {len(combined)} Zeilen erfolgreich erstellt.")
+    logging.info("combined_stock_data.csv mit %s Zeilen erstellt.", len(combined))
 
-# -----------------------------
-# 2️⃣ Daten vorbereiten
-# -----------------------------
 
 def prepare_data():
-    """Lädt und verarbeitet kombinierte Daten: Feature Engineering & Bereinigung."""
+    """Laedt kombinierte Daten, erstellt technische Features und codiert die Aktie."""
     df = pd.read_csv(COMBINED_FILE)
-    print("📊 Spaltenübersicht:", df.columns.tolist())
 
-    datetime_column = next((col for col in df.columns if "date" in col.lower()), None)
-    if not datetime_column:
-        raise ValueError("❌ Keine geeignete Zeitspalte gefunden.")
+    missing_columns = [column for column in REQUIRED_COLUMNS if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Fehlende Spalten in {COMBINED_FILE}: {missing_columns}")
 
-    try:
-        df["Datetime"] = pd.to_datetime(df[datetime_column], errors="coerce", utc=True)
-    except Exception as e:
-        raise ValueError(f"❌ Fehler beim Konvertieren der Zeitspalte: {e}")
+    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce", utc=True)
+    for column in ["Open", "High", "Low", "Close", "Volume"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    df = df.dropna(subset=["Datetime", "Open", "High", "Low", "Close", "Volume"])
-    df = df.sort_values(by=["stock", "Datetime"])
+    df = build_feature_frame(df, include_target=True)
+    df = df[~df["stock"].isin(MARKET_SYMBOLS)]
+    feature_columns = get_numeric_feature_columns(df)
+    df[feature_columns] = df[feature_columns].fillna(0)
+    df = df.dropna(subset=["target_return"])
 
-    # Renditeberechnung
-    df["prev_close"] = df.groupby("stock")["Close"].shift(1)
-    df["return"] = (df["Close"] - df["prev_close"]) / df["prev_close"]
-    df = df.dropna(subset=["return"])
-
-    # Zeitfeatures
-    df["hour"] = df["Datetime"].dt.hour
-    df["dayofweek"] = df["Datetime"].dt.dayofweek
-    df["month"] = df["Datetime"].dt.month
-
-    df = df.drop(columns=["prev_close"])
-    df.to_csv(COMBINED_FILE, index=False)  # Überschreibt Datei mit Feature-Set
+    df = pd.get_dummies(
+        df,
+        columns=["stock"],
+        prefix="stock",
+        dtype=int,
+    )
+    df.to_csv(PREPARED_FILE, index=False)
 
     return df
 
-# -----------------------------
-# 3️⃣ Modell trainieren & loggen
-# -----------------------------
+
+def get_or_create_experiment(experiment_name: str):
+    client = mlflow.tracking.MlflowClient()
+    existing = client.get_experiment_by_name(experiment_name)
+    if existing is not None:
+        return existing.experiment_id
+    return client.create_experiment(experiment_name)
+
 
 def train_and_log_model():
-    """Trainiert je Aktie ein Modell und loggt es inklusive Metriken & Feature-Info in MLflow."""
-    mlflow.set_tracking_uri("http://localhost:5001")
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    """Trainiert ein gemeinsames Modell ueber alle Aktien und loggt es in MLflow."""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    experiment_id = get_or_create_experiment(EXPERIMENT_NAME)
+    mlflow.set_experiment(experiment_id=experiment_id)
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
     df = prepare_data()
-    feature_columns = ["Open", "High", "Low", "Volume", "hour", "dayofweek", "month"]
-    target_column = "return"
+    stock_feature_columns = sorted(column for column in df.columns if column.startswith("stock_"))
+    numeric_feature_columns = [
+        column for column in get_numeric_feature_columns(df)
+        if not column.startswith("stock_")
+    ]
+    feature_columns = numeric_feature_columns + stock_feature_columns
 
-    tickers = df["stock"].unique()
+    if len(df) < 10:
+        raise ValueError("Zu wenige Trainingsdaten fuer ein gemeinsames Modell.")
+    if not stock_feature_columns:
+        raise ValueError("Keine Aktien-Feature-Spalten gefunden.")
 
-    for ticker in tickers:
-        ticker_df = df[df["stock"] == ticker].copy()
-        X = ticker_df[feature_columns]
-        y = ticker_df[target_column]
+    X = df[feature_columns]
+    y = df["target_return"]
 
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=False)
-        model = LGBMRegressor(n_estimators=100, learning_rate=0.05)
-        model.fit(X_train, y_train)
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=False)
+    model = LGBMRegressor(n_estimators=100, learning_rate=0.05)
+    model.fit(X_train, y_train)
 
-        y_pred = model.predict(X_val)
-        r2 = r2_score(y_val, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+    y_pred = model.predict(X_val)
+    r2 = r2_score(y_val, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_val, y_pred))
 
-        if r2 < 0.0:
-            print(f"⚠️ Achtung: Modellleistung zu niedrig (R2={r2:.2f}) – wird trotzdem geloggt.")
+    if r2 < 0.0:
+        logging.warning("Modellleistung niedrig: R2=%.2f. Modell wird trotzdem geloggt.", r2)
 
-        with mlflow.start_run(run_name=f"{ticker}_{datetime.now().isoformat()}") as run:
-            mlflow.log_params({"ticker": ticker, "model_type": "LGBM", "features": feature_columns})
-            mlflow.log_metrics({"r2": r2, "rmse": rmse})
-            mlflow.sklearn.log_model(model, artifact_path="model")
+    with mlflow.start_run(run_name=f"all_stocks_{datetime.now().isoformat()}") as run:
+        mlflow.log_params({
+            "model_type": "LGBM",
+            "training_mode": "all_stocks",
+            "num_features": len(feature_columns),
+            "num_rows": len(df),
+        })
+        mlflow.log_metrics({"r2": r2, "rmse": rmse})
 
-            # Speichere Feature-Info
-            info = pd.DataFrame({"feature_columns": [feature_columns]})
-            info_path = os.path.join(MODEL_DIR, "info.json")
-            info.to_json(info_path)
-            mlflow.log_artifact(info_path, artifact_path="info")
+        info = pd.DataFrame({"feature_columns": [feature_columns]})
+        info_path = os.path.join(MODEL_DIR, "info.json")
+        info.to_json(info_path)
+        mlflow.log_artifact(info_path, artifact_path="info")
 
-            # Modell registrieren & in Produktion setzen
-            result = mlflow.register_model(
-                model_uri=f"runs:/{run.info.run_id}/model",
-                name="stock_price_model"
-            )
+        mlflow.sklearn.log_model(model, artifact_path="model")
 
-            client = mlflow.tracking.MlflowClient()
-            client.transition_model_version_stage(
-                name="stock_price_model",
-                version=result.version,
-                stage="Production",
-                archive_existing_versions=True
-            )
+        result = mlflow.register_model(
+            model_uri=f"runs:/{run.info.run_id}/model",
+            name=MODEL_NAME,
+        )
 
-            print(f"✅ Modell für {ticker} erfolgreich mit R2={r2:.2f} geloggt und registriert.")
+        client = mlflow.tracking.MlflowClient()
+        client.transition_model_version_stage(
+            name=MODEL_NAME,
+            version=result.version,
+            stage="Production",
+            archive_existing_versions=True,
+        )
 
-# -----------------------------
-# ⚙️ Airflow DAG Definition
-# -----------------------------
+        logging.info("Gemeinsames Modell mit R2=%.2f und RMSE=%.6f registriert.", r2, rmse)
+
 
 default_args = {
     "owner": "airflow",
@@ -172,14 +175,10 @@ default_args = {
 dag = DAG(
     "stock_model_trainer_mlflow",
     default_args=default_args,
-    description="Trainiert ML-Modelle für Aktienrenditen und loggt sie in MLflow",
-    schedule_interval="10 * * * *",  # stündlich um xx:10
+    description="Trainiert ein gemeinsames Modell fuer Aktienrenditen und loggt es in MLflow",
+    schedule_interval="10 * * * *",
     catchup=False,
 )
-
-# -----------------------------
-# Tasks
-# -----------------------------
 
 combine_csvs_task = PythonOperator(
     task_id="combine_stock_csvs_task",
@@ -193,5 +192,4 @@ train_and_log_model_task = PythonOperator(
     dag=dag,
 )
 
-# Task-Abhängigkeiten
 combine_csvs_task >> train_and_log_model_task

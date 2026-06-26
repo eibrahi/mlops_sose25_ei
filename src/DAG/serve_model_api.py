@@ -12,9 +12,9 @@ import os
 # 🔧 Konfiguration
 # -----------------------------
 
-DATA_DIR = "/home/holu/airflow/data/stock_data"
-MODEL_DIR = "/home/holu/airflow/data/models"
-FASTAPI_SCRIPT = "/home/holu/airflow/data/fastapi_model_server.py"  # Pfad zum API-Skript
+DATA_DIR = os.getenv("STOCK_DATA_DIR", "/opt/airflow/data/stock_data")
+MODEL_DIR = os.getenv("MODEL_DIR", "/opt/airflow/data/models")
+FASTAPI_SCRIPT = os.getenv("FASTAPI_SCRIPT", "/opt/airflow/api_server/fastapi_model_server.py")  # Pfad zum API-Skript
 
 default_args = {
     'owner': 'airflow',

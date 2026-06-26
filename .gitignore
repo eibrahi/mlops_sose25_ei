@@ -179,3 +179,8 @@ cython_debug/
 # Excel-Dateien ignorieren
 *.xls
 *.xlsx
+
+# Lokale Docker/Airflow/MLflow-Laufzeitdaten
+airflow-data/
+airflow-logs/
+mlflow-data/
